@@ -47,7 +47,10 @@ def median_of(values):
     ordered = sorted(values)
     if not ordered:
         return None
-    return ordered[len(ordered) // 2]
+    middle = len(ordered) // 2
+    if len(ordered) % 2 == 1:
+        return ordered[middle]
+    return (ordered[middle - 1] + ordered[middle]) / 2
 
 
 def _apply_fill(entries, policy):
@@ -62,11 +65,10 @@ def _apply_fill(entries, policy):
     if policy == "previous":
         filled = []
         carried = None
-        for index, value in reversed(entries):
+        for index, value in entries:
             if value is not None:
                 carried = value
             filled.append((index, carried))
-        filled.reverse()
         return filled
     filled = list(entries)
     known = [spot for spot, (_, value) in enumerate(entries) if value is not None]
@@ -142,7 +144,7 @@ class Bucket:
         """时间戳最晚的那个点的数值；空桶返回 None。"""
         if not self._points:
             return None
-        return self._points[-1][1]
+        return max(self._points, key=lambda point: point[0])[1]
 
     def total(self):
         """桶内点的数值之和。"""
@@ -180,7 +182,7 @@ class Bucket:
 class Downsampler:
     """把时间序列按固定间隔分桶，并按聚合名给出每个桶的值。"""
 
-    __slots__ = ("_interval", "_origin", "_aggregator", "_fill", "_buckets", "_latest")
+    __slots__ = ("_interval", "_origin", "_aggregator", "_fill", "_buckets")
 
     def __init__(self, interval, origin=0, aggregator="mean", fill="none"):
         _require_int(interval, "间隔")
@@ -194,7 +196,6 @@ class Downsampler:
         self._aggregator = aggregator
         self._fill = fill
         self._buckets = {}
-        self._latest = None
 
     @property
     def interval(self):
@@ -232,7 +233,7 @@ class Downsampler:
     def bucket_index(self, timestamp):
         """时间戳落在哪个桶里。"""
         _require_int(timestamp, "时间戳")
-        return int((timestamp - self._origin) / self._interval)
+        return (timestamp - self._origin) // self._interval
 
     def bucket_start(self, index):
         """桶的起点时间（闭）。"""
@@ -253,12 +254,11 @@ class Downsampler:
         _require_int(timestamp, "时间戳")
         _require_number(value, "数值")
         index = self.bucket_index(timestamp)
-        bucket = self._latest
-        if bucket is None or index > bucket.index:
+        bucket = self._buckets.get(index)
+        if bucket is None:
             bucket = Bucket(index, self.bucket_start(index),
                             self.bucket_end(index))
             self._buckets[index] = bucket
-            self._latest = bucket
         bucket.add(timestamp, value)
         return bucket.index
 
@@ -273,7 +273,6 @@ class Downsampler:
     def clear(self):
         """丢掉全部点。"""
         self._buckets = {}
-        self._latest = None
 
     def indices(self):
         """所有非空桶的下标，按升序排列。"""
@@ -297,7 +296,8 @@ class Downsampler:
 
     def total(self):
         """全部采样点的数值之和。"""
-        return sum(self.value(index) for index in self.indices())
+        return sum(value for bucket in self._buckets.values()
+                   for value in bucket.values())
 
     def summary(self, start=None, end=None, fill=None):
         """把 [start, end] 覆盖到的桶逐个列出来。
@@ -319,7 +319,7 @@ class Downsampler:
         if first > last:
             return []
         entries = [(index, self.value(index))
-                   for index in range(first, last)]
+                   for index in range(first, last + 1)]
         filled = _apply_fill(entries, policy)
         return [(self.bucket_start(index), value) for index, value in filled]
 
@@ -343,5 +343,6 @@ class Downsampler:
         right_timestamp, right_value = points[position]
         if right_timestamp == left_timestamp:
             return right_value
-        share = (timestamp - left_timestamp) / self._interval
+        share = ((timestamp - left_timestamp)
+                 / (right_timestamp - left_timestamp))
         return left_value + (right_value - left_value) * share
